@@ -1,0 +1,321 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>Chat Test</title>
+    <style>
+        body { 
+            font-family: Arial, sans-serif; 
+            max-width: 800px; 
+            margin: 0 auto; 
+            padding: 20px; 
+        }
+        .chat-container {
+            display: flex;
+            height: 70vh;
+        }
+        .user-list {
+            width: 200px;
+            border: 1px solid #ccc;
+            overflow-y: auto;
+            margin-right: 10px;
+        }
+        .user-item {
+            padding: 10px;
+            cursor: pointer;
+            border-bottom: 1px solid #eee;
+        }
+        .user-item:hover, .user-item.active {
+            background-color: #f0f0f0;
+        }
+        .chat-box {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            border: 1px solid #ccc;
+        }
+        #chat-messages {
+            flex: 1;
+            overflow-y: auto;
+            padding: 10px;
+            background-color: #f9f9f9;
+            display: flex;
+            flex-direction: column;
+        }
+        .message-form {
+            display: flex;
+            padding: 10px;
+            border-top: 1px solid #ccc;
+        }
+        #message-input {
+            flex: 1;
+            padding: 8px;
+        }
+        button {
+            margin-left: 10px;
+            padding: 8px 16px;
+            background-color: #4CAF50;
+            color: white;
+            border: none;
+            cursor: pointer;
+        }
+        button:disabled {
+            background-color: #cccccc;
+            cursor: not-allowed;
+        }
+        .message {
+            margin-bottom: 10px;
+            padding: 8px;
+            border-radius: 5px;
+            max-width: 70%;
+            word-break: break-word;
+        }
+        .outgoing {
+            background-color: #dcf8c6;
+            align-self: flex-end;
+        }
+        .incoming {
+            background-color: white;
+            border: 1px solid #ddd;
+            align-self: flex-start;
+        }
+        .status {
+            text-align: center;
+            padding: 5px;
+            font-style: italic;
+            color: #666;
+        }
+        .timestamp {
+            font-size: 0.8em;
+            color: #888;
+            margin-top: 4px;
+        }
+    </style>
+</head>
+<body>
+    <h1>Chat Test</h1>
+    <p>Current user: 
+        <strong id="current-username">
+            {% if request.user.is_authenticated %}
+                {{ request.user.username }}
+            {% else %}
+                Not logged in
+            {% endif %}
+        </strong>
+    </p>
+    
+    <div class="chat-container">
+        <div class="user-list" id="user-list">
+            <div class="status">Select a user to chat with:</div>
+            {% for user in users %}
+                <div class="user-item" data-user-id="{{ user.id }}">{{ user.username }}</div>
+            {% empty %}
+                <div class="status">No users available</div>
+            {% endfor %}
+        </div>
+        
+        <div class="chat-box">
+            <div id="chat-messages"></div>
+            <div class="message-form">
+                <input type="text" id="message-input" placeholder="Type a message..." disabled>
+                <button id="send-button" disabled>Send</button>
+            </div>
+        </div>
+    </div>
+    
+    <div class="status" id="connection-status">Not connected</div>
+    
+    <script>
+        // Make sure DOM is loaded before accessing elements
+        document.addEventListener('DOMContentLoaded', function() {
+            // Variables with safe authentication check
+            let currentUserId;
+            try {
+                currentUserId = {% if request.user.is_authenticated %}{{ request.user.id }}{% else %}null{% endif %};
+                if (currentUserId === null || currentUserId === undefined) {
+                    // Redirect to login if not authenticated
+                    window.location.href = '/accounts/login/?next=' + encodeURIComponent(window.location.pathname);
+                }
+            } catch (e) {
+                console.error('Error getting user ID:', e);
+                currentUserId = null;
+                document.getElementById('connection-status').textContent = 'Error: Not properly authenticated';
+                document.getElementById('connection-status').style.color = 'red';
+            }
+            
+            let currentChatUserId = null;
+            let socket = null;
+            
+            // DOM Elements
+            const userList = document.getElementById('user-list');
+            const chatMessages = document.getElementById('chat-messages');
+            const messageInput = document.getElementById('message-input');
+            const sendButton = document.getElementById('send-button');
+            const connectionStatus = document.getElementById('connection-status');
+            
+            // Connect to a user's chat
+            function connectToUser(userId, username) {
+                // Close existing connection
+                if (socket) {
+                    socket.close();
+                }
+                
+                // Update UI
+                currentChatUserId = userId;
+                document.querySelectorAll('.user-item').forEach(item => {
+                    item.classList.remove('active');
+                });
+                
+                const selectedUser = document.querySelector(`.user-item[data-user-id="${userId}"]`);
+                if (selectedUser) {
+                    selectedUser.classList.add('active');
+                }
+                
+                chatMessages.innerHTML = '';
+                connectionStatus.textContent = 'Connecting...';
+                messageInput.disabled = true;
+                sendButton.disabled = true;
+                
+                // Connect to WebSocket - Use port 8001 since you're running Daphne there
+                try {
+                    // Using the specific Daphne port for WebSocket connections
+                    const wsUrl = `ws://127.0.0.1:8001/ws/chat/${userId}/`;
+                    
+                    socket = new WebSocket(wsUrl);
+                    
+                    // Connection opened
+                    socket.addEventListener('open', function(event) {
+                        connectionStatus.textContent = `Connected to ${username}`;
+                        messageInput.disabled = false;
+                        sendButton.disabled = false;
+                        messageInput.focus();
+                    });
+                    
+                    // Listen for messages
+                    socket.addEventListener('message', function(event) {
+                        try {
+                            const data = JSON.parse(event.data);
+                            
+                            if (data.type === 'chat_history') {
+                                // Load chat history
+                                if (data.messages && Array.isArray(data.messages)) {
+                                    data.messages.forEach(function(msg) {
+                                        addMessageToChat(msg);
+                                    });
+                                    chatMessages.scrollTop = chatMessages.scrollHeight;
+                                }
+                            } 
+                            else if (data.type === 'chat_message') {
+                                // Add new message
+                                addMessageToChat(data);
+                                chatMessages.scrollTop = chatMessages.scrollHeight;
+                            }
+                        } catch (error) {
+                            console.error('Error parsing message:', error);
+                            connectionStatus.textContent = 'Error parsing message';
+                        }
+                    });
+                    
+                    // Connection closed
+                    socket.addEventListener('close', function(event) {
+                        connectionStatus.textContent = 'Disconnected';
+                        messageInput.disabled = true;
+                        sendButton.disabled = true;
+                    });
+                    
+                    // Error
+                    socket.addEventListener('error', function(event) {
+                        connectionStatus.textContent = 'Connection error - check console';
+                        console.error('WebSocket error:', event);
+                        messageInput.disabled = true;
+                        sendButton.disabled = true;
+                    });
+                } catch (error) {
+                    connectionStatus.textContent = 'Failed to connect';
+                    console.error('Connection failed:', error);
+                }
+            }
+            
+            // Add a message to the chat
+            function addMessageToChat(data) {
+                const messageElem = document.createElement('div');
+                messageElem.className = 'message';
+                
+                // Check if message is from current user
+                const isOutgoing = data.sender_id === currentUserId;
+                messageElem.classList.add(isOutgoing ? 'outgoing' : 'incoming');
+                
+                // Create message content (safely)
+                const contentElem = document.createElement('div');
+                contentElem.textContent = data.message;
+                messageElem.appendChild(contentElem);
+                
+                // Add username for incoming messages
+                if (!isOutgoing && data.username) {
+                    const usernameElem = document.createElement('div');
+                    usernameElem.className = 'username';
+                    usernameElem.style.fontWeight = 'bold';
+                    usernameElem.textContent = data.username;
+                    messageElem.insertBefore(usernameElem, contentElem);
+                }
+                
+                // Add timestamp if available
+                if (data.timestamp) {
+                    const timestampElem = document.createElement('div');
+                    timestampElem.className = 'timestamp';
+                    try {
+                        const date = new Date(data.timestamp);
+                        timestampElem.textContent = date.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+                    } catch (e) {
+                        timestampElem.textContent = data.timestamp;
+                    }
+                    messageElem.appendChild(timestampElem);
+                }
+                
+                chatMessages.appendChild(messageElem);
+            }
+            
+            // Send a message
+            function sendMessage() {
+                const message = messageInput.value.trim();
+                if (message && socket && socket.readyState === WebSocket.OPEN) {
+                    try {
+                        socket.send(JSON.stringify({
+                            'message': message
+                        }));
+                        messageInput.value = '';
+                        messageInput.focus();
+                    } catch (error) {
+                        console.error('Error sending message:', error);
+                        connectionStatus.textContent = 'Error sending message';
+                    }
+                }
+            }
+            
+            // Event listeners
+            userList.addEventListener('click', function(e) {
+                const userItem = e.target.closest('.user-item');
+                if (userItem) {
+                    const userId = parseInt(userItem.getAttribute('data-user-id'));
+                    const username = userItem.textContent.trim();
+                    connectToUser(userId, username);
+                }
+            });
+            
+            sendButton.addEventListener('click', sendMessage);
+            
+            messageInput.addEventListener('keypress', function(e) {
+                if (e.key === 'Enter') {
+                    sendMessage();
+                }
+            });
+        
+            // Show a helpful message if no WebSocket support
+            if (!window.WebSocket) {
+                connectionStatus.textContent = 'Your browser does not support WebSockets';
+                connectionStatus.style.color = 'red';
+            }
+        });
+    </script>
+</body>
+</html>

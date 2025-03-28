@@ -1,0 +1,16 @@
+WebSocket Connection (consumers.py)
+
+Creates a live connection between user's browser and server
+Each user joins their own personal notification group based on their user ID
+Allows server to send messages directly to specific users in real-time
+Background Processing (tasks.py)
+
+Contains a Celery task that runs in the background
+Creates notifications without slowing down your main application
+Sends the real-time message to the right user's WebSocket connection
+Service Layer (services.py)
+
+A simple interface that other parts of your app can use
+Takes care of queuing notification tasks in the background
+Makes it easy to send notifications from anywhere in your code
+
