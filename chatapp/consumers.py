@@ -6,6 +6,7 @@ from django.db import models
 from asgiref.sync import sync_to_async
 from .tasks import save_chat_message_task
 from .models import Chat
+from users.models import Connections
 
 class ChatConsumer(AsyncWebsocketConsumer):
     async def connect(self):
@@ -15,9 +16,15 @@ class ChatConsumer(AsyncWebsocketConsumer):
             return
 
         # Get the other user's ID from the URL
+        # i.e path('ws/chat/<int:user_id>/', consumers.ChatConsumer.as_asgi()),
         self.user_id = self.scope['user'].id
         self.other_user_id = int(self.scope['url_route']['kwargs']['user_id'])
         
+        # Check if the users are allowed to chat with each other
+        if not await self.can_users_chat():
+            await self.close(code=4004)  # Access denied
+            return
+
         # Create a unique room name (sorted by ID to ensure consistency)
         user_ids = sorted([self.user_id, self.other_user_id])
         self.room_name = f"chat_{user_ids[0]}_{user_ids[1]}"
@@ -107,3 +114,39 @@ class ChatConsumer(AsyncWebsocketConsumer):
             receiver_id=self.user_id,
             read=False
         ).update(read=True)
+
+    # New code 
+
+    @database_sync_to_async
+    def can_users_chat(self):
+        """
+        Determine if the current user is allowed to chat with the other user
+        based on connection status.
+        """
+        from django.contrib.auth import get_user_model
+        User = get_user_model()
+        
+        try:
+            # Check if the other user exists
+            other_user = User.objects.get(id=self.other_user_id)
+            
+            # Don't allow chatting with yourself
+            if self.user_id == self.other_user_id:
+                return False
+                
+            # Check if they are connected (friendship established)
+            connection_exists = Connections.objects.filter(
+                user_id=self.user_id,
+                connected_user_id=self.other_user_id
+            ).exists()
+            
+            # Only connected users can chat
+            return connection_exists
+            
+        except User.DoesNotExist:
+            # User doesn't exist
+            return False
+        except Exception as e:
+            # Log the error for debugging
+            print(f"Error checking chat permission: {e}")
+            return False
