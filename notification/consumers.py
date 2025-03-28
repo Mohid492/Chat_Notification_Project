@@ -14,11 +14,11 @@ class NotificationConsumer(AsyncWebsocketConsumer):
             # Reject the connection if user is not authenticated
             await self.close(code=4003)
             return
-            
+        #Assigns a unique group name for the user based on their ID    
         self.group_name = f"user_{self.scope['user'].id}"
 
         # Join user notification group
-        await self.channel_layer.group_add(
+        await self.channel_layer.group_add( #Adds the WebSocket connection to a group in the channel layer.
             self.group_name,
             self.channel_name
         )
